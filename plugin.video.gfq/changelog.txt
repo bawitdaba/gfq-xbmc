@@ -1,3 +1,11 @@
+3.0.0
+- Removed Show Caching Added in 2.0.0, this caused older shows to not be removed from Menu Items and offered no performance increase
+- Removed GFQ Live Sub Menu and Choices for Dailymotion, Justin.TV and Ustream
+- Added Watch GFQ Live to the Main Menu using GFQ Live HLS Feed
+- Moved "GFQ Live - Audio Only" to Main Menu and Renamed it to "Listen to GFQ Live"
+- Removed "Latest Episodes" Sub Menu as the RSS Feed Populating this Menu is Retired by GFQ
+- Fixed Listing of Show Episodes for Podcasts such as "What The Tech" that contained an RSS feed without <media:content> Tags
+- Added Additional Exception Handling when making requests to URLs such as OPML Shows Feed.
 2.0.0
 - Full Addon Rewrite, all functions re-written or re-derived from source
 - Changed fanart.jpg to match GFQ Website Redesign
