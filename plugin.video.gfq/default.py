@@ -3,10 +3,10 @@
 #############################################################################################
 #
 # Name: plugin.video.gfq
-# Author: Bawitdaba
-# Description: Guys From Queens Network live video streams and podcast episodes
+# Author: Nicholas Stinzianni
+# Description: Guys From Queens (GFQ) Network is a producer of talk-radio style podcasts covering "everything from news, pop-culture, technology, opinion, and entertainment on a daily basis."
 # Type: Video Addon
-# Comments: Original release derived from the TWiT addon made by divingmule and Adam B
+# Version: 3.0.0
 #
 #############################################################################################
 
@@ -21,8 +21,6 @@ from dateutil.parser import parse
 from traceback import format_exc
 from urlparse import urlparse, parse_qs
 from math import ceil
-
-import StorageServer
 from bs4 import BeautifulSoup
 
 import xbmcplugin
@@ -36,8 +34,9 @@ addon_fanart = addon.getAddonInfo('fanart')
 addon_icon = addon.getAddonInfo('icon')
 addon_path = xbmc.translatePath(addon.getAddonInfo('path')).encode('utf-8')
 language = addon.getLocalizedString
-cache = StorageServer.StorageServer("gfq", 24)
 
+global shows
+shows = {}
 
 def addon_log(string):
     try:
@@ -45,13 +44,6 @@ def addon_log(string):
     except:
         log_message = 'addonException: addon_log: %s' %format_exc()
     xbmc.log("[%s-%s]: %s" %(addon_id, addon_version, log_message), level=xbmc.LOGDEBUG)
-
-
-def cache_shows_file():
-    ''' creates an initial cache from the shows file '''
-    show_file = os.path.join(addon_path, 'resources', 'shows')
-    cache.set("shows", open(show_file, 'r').read())
-
 
 def make_request(url, locate=False):
     try:
@@ -70,66 +62,22 @@ def make_request(url, locate=False):
         if hasattr(e, 'code'):
             addon_log('We failed with error code - %s.' %e.code)
 
-
-def set_resolved_url(resolved_url):
+def set_resolved_url(resolved_url, name):
     success = False
     if resolved_url:
         success = True
     else:
         resolved_url = ''
-    item = xbmcgui.ListItem(path=resolved_url)
-    xbmcplugin.setResolvedUrl(int(sys.argv[1]), success, item)
-
-
-def get_justintv():
-    token_url = 'https://api.twitch.tv/api/channels/guysfromqueens/access_token?as3=t'
-    data = json.loads(make_request(token_url))
-    url_params = [
-        'nauthsig=%s' %data['sig'],
-        'player=jtvweb',
-        'private_code=null',
-        'type=any',
-        'nauth=%s' %urllib2.quote(data['token']),
-        'allow_source=true',
-            ]
-    resolved_url = 'http://usher.twitch.tv/select/guysfromqueens.json?' + '&'.join(url_params)
-    set_resolved_url(resolved_url)
-
-
-def get_dailymotion():
-    # User ID = x14gtas
-    req = urllib2.Request("http://www.dailymotion.com/sequence/x14gtas")
-    response = urllib2.urlopen(req)
-    content = response.read()
-    response.close()
-
-    if content.find('"statusCode":410') > 0 or content.find('"statusCode":403') > 0:
-        xbmc.executebuiltin('XBMC.Notification(Unable to find live stream.)')
+    
+    if name == '':
+        item = xbmcgui.ListItem(path=resolved_url)
     else:
-        matchFullHD = re.compile('"hd1080URL":"(.+?)"', re.DOTALL).findall(content)
-        matchHD = re.compile('"hd720URL":"(.+?)"', re.DOTALL).findall(content)
-        matchHQ = re.compile('"hqURL":"(.+?)"', re.DOTALL).findall(content)
-        matchSD = re.compile('"sdURL":"(.+?)"', re.DOTALL).findall(content)
-        matchLD = re.compile('"video_url":"(.+?)"', re.DOTALL).findall(content)
-        url = ""
-        if matchFullHD:
-            url = urllib.unquote_plus(matchFullHD[0]).replace("\\", "")
-        elif matchHD:
-            url = urllib.unquote_plus(matchHD[0]).replace("\\", "")
-        elif matchHQ:
-            url = urllib.unquote_plus(matchHQ[0]).replace("\\", "")
-        elif matchSD:
-            url = urllib.unquote_plus(matchSD[0]).replace("\\", "")
-        elif matchLD:
-            url = urllib.unquote_plus(matchSD2[0]).replace("\\", "")
-        if url:
-            req = urllib2.Request(url)
-            response = urllib2.urlopen(req)
-            url = response.read()
-            response.close()
-
-            set_resolved_url(url)
-
+        # ' // Replace Watch GFQ Live with GFQ Live on Now Playing Screen
+        if name == language(30200) or name == language(30300):
+            name = language(30000)
+        item = xbmcgui.ListItem(name, path=resolved_url)
+    
+    xbmcplugin.setResolvedUrl(int(sys.argv[1]), success, item)
 
 def add_dir(name, url, iconimage, mode, info={}, VideoStreamInfo={}, AudioStreamInfo={}):
     item_params = {'name': name, 'url': url, 'mode': mode,
@@ -137,7 +85,7 @@ def add_dir(name, url, iconimage, mode, info={}, VideoStreamInfo={}, AudioStream
     plugin_url = '%s?%s' %(sys.argv[0], urllib.urlencode(item_params))
     listitem = xbmcgui.ListItem(name, iconImage=iconimage, thumbnailImage=iconimage)
     isfolder = True
-    if mode == 'resolve_url' or mode == 'justintv' or mode == 'dailymotion':
+    if mode == 'resolve_url':
         isfolder = False
         listitem.setProperty('IsPlayable', 'true')
     listitem.setProperty('Fanart_Image', addon_fanart)
@@ -154,61 +102,44 @@ def add_dir(name, url, iconimage, mode, info={}, VideoStreamInfo={}, AudioStream
 
     xbmcplugin.addDirectoryItem(int(sys.argv[1]), plugin_url, listitem, isfolder)
 
-
-def shows_cache():
-    ''' this function checks for shows that haven't been cached '''
-    soup = BeautifulSoup(make_request('http://www.gfqnetwork.com/roku/config.opml'), 'html.parser')
-    outlines = soup.findAll('outline')
+# ' // Parses XML File with Listing of GFQ Show Titles, Show Cover Art, and RSS Feed for Show
+def get_shows():
+    try:
+        soup = BeautifulSoup(make_request('http://www.gfqnetwork.com/roku/config.opml'), 'html.parser')
+        outlines = soup.findAll('outline')
+    except:
+        addon_log('Error: Unable to Load GFQ Shows from Roku OPML File. URL: http://www.gfqnetwork.com/roku/config.opml')
 
     show_titles = re.compile('title="(.+?)"').findall(str(outlines))
     show_icons = re.compile('img="(.+?)"').findall(str(outlines))
     show_urls = re.compile('url="(.+?)"').findall(str(outlines))
 
     for index in range(len(show_titles)):
-        if not shows.has_key(show_titles[index]):
-            addon_log('Show not in cache: %s' %show_titles[index])
-            try:
-                shows[show_titles[index]] = {'show_icon': show_icons[index], 'show_url': show_urls[index], 'show_desc': ''}
-                cache.set('shows', repr(shows))
-                addon_log('Cached new show: %s' %show_titles[index])
-            except:
-                addon_log('addonException cache new show: %s' %format_exc)
+        try:
+            shows[show_titles[index]] = {'show_icon': show_icons[index], 'show_url': show_urls[index], 'show_desc': ''}
+            addon_log('Found GFQ Show: %s' %show_titles[index])
+        except:
+            addon_log('addonException loading new show: %s' %format_exc)
     return "True"
 
-
+# ' // Displays Main Menu with GFQ Live Stream Links and GFQ Shows
 def display_shows():
-    ''' display the main menu '''
-    # check for new shows at the set cacheFunction interval
-    cache_shows = eval(cache.cacheFunction(shows_cache))
-    add_dir(language(30000), 'gfq_live', addon_icon, 'gfq_live')
-    add_dir(language(30100), 'http://feeds.feedburner.com/GfqNetworkallVideo', addon_icon, 'latest_episodes')
+    VideoStreamInfo = {'codec': 'h264', 'aspect': 1.78, 'width': 1280, 'height': 720}
+    AudioStreamInfo = {'codec': 'aac', 'language': 'en', 'channels': 2}
+
+    get_shows()
+    # // Watch Live - HLS Feed
+    add_dir(language(30200), 'http://live.shiftyland.net/hls/gfq.m3u8', addon_icon, 'resolve_url', [], VideoStreamInfo, AudioStreamInfo)
+    # // Listen Live - Audio Only Feed
+    add_dir(language(30300), 'http://s25.streamerportal.com:8235/live', addon_icon, 'resolve_url', [], [], AudioStreamInfo)
+    # // Latest GFQ Episodes -- Feed retired by GFQ
+    #add_dir(language(30100), 'http://feeds.feedburner.com/GfqNetworkallVideo', addon_icon, 'latest_episodes')
     items = sorted(shows.keys(), key=str.lower)
     for i in items:
         show = shows[i]
         add_dir(i, show['show_url'], show['show_icon'], 'episodes', {'plot': show['show_desc']})
 
-
-def display_live():
-    UstreamVideoStreamInfo = {'codec': 'h264', 'aspect': 1.78, 'width': 426, 'height': 240} #UStream
-    VideoStreamInfo = {'codec': 'h264', 'aspect': 1.78, 'width': 1280, 'height': 720}
-    AudioStreamInfo = {'codec': 'aac', 'language': 'en', 'channels': 2}
-
-    # // Dailymotion
-    add_dir(language(30001), 'get_dailymotion', addon_icon, 'dailymotion', [],VideoStreamInfo, AudioStreamInfo)
-    # // Ustream
-    add_dir(language(30002), 'http://iphone-streaming.ustream.tv/ustreamVideo/3068635/streams/live/playlist.m3u8', addon_icon, 'resolve_url', [],UstreamVideoStreamInfo, AudioStreamInfo)
-    # // Justin.tv
-    add_dir(language(30003), 'get_justintv', addon_icon, 'justintv', [],VideoStreamInfo, AudioStreamInfo)
-    # // Audio Only
-    add_dir(language(30004), 'http://s25.streamerportal.com:8235/live', addon_icon, 'resolve_url', [],VideoStreamInfo, AudioStreamInfo)
-
-
-def display_episodes(url, iconimage):
-    episodes = get_episodes(url, iconimage)
-    for i in episodes:
-        add_dir(i['info']['Title'], i['url'], i['thumb'], 'resolve_url', i['info'], i['VideoStreamInfo'], i['AudioStreamInfo'])
-
-
+# ' // Parses RSS XML Feeds and Returns Array of Episodes with Show Titles, Numbers, Dates, Durations, Genre, Plot, Size, and Stream Information
 def get_episodes(url, iconimage):
     ''' return array of episodes of a specific show '''
     soup = BeautifulSoup(make_request(url), 'html.parser')
@@ -220,11 +151,14 @@ def get_episodes(url, iconimage):
 
     episodes = []
 
+    # ' // Loop Through Each <item> Tag and Scan HTML Within Tag
     for item in items:
+        # ' // Get Podcast Title
         try:
             show_title = str(item.find_next("title").get_text("", strip=True).encode('utf-8'))
         except:
             show_title = ""
+        # ' // Get Podcast Episode Number
         show_number = re.compile('.* Ep. (.+?) - .*').findall(show_title)
         if len(show_number) != 1:
             show_number = re.compile('.* Ep. (.+?) – .*').findall(show_title)
@@ -232,17 +166,20 @@ def get_episodes(url, iconimage):
             show_number = int(show_number[0])
         else:
             show_number = 0
+        # ' // Get Podcast Air Date
         try:
             show_date = parse(str(item.find_next("pubdate").get_text("", strip=True).encode('utf-8')), fuzzy=True)
         except:
             show_date = ""
         show_icon = addon_icon
+        # ' // Get Podcast Duration
         try:
             show_duration = str(item.find_next("itunes:duration").get_text("", strip=True).encode('utf-8'))
         except:
             show_duration = "0:0:0"
         show_duration = sum(int(x) * 60 ** i for i,x in enumerate(reversed(show_duration.split(":"))))
 
+        # ' // Populate Kodi Media Information Array from Above Podcast Variables
         info = {}
         # ' // Episode Title
         info['Title'] = show_title
@@ -262,15 +199,28 @@ def get_episodes(url, iconimage):
             info['Plot'] = str(item.find_next("itunes:summary").get_text("", strip=True).encode('utf-8'))
         except:
             info['Plot'] = ""
+
+        # ' // Attempt 1: Obtain Video URL and Size from <enclosure> Tag
         try:
-            media_content = re.compile('<media:content filesize="(.+?)" type="video/mp4" url="(.+?)">').findall(str(item.find_next("media:content").encode('utf-8')))
+            media_content = re.compile('<enclosure length="(.+?)" type="video/mp4" url="(.+?)">').findall(str(item.find_next("enclosure").encode('utf-8')))
         except:
             media_content = ""
+
+        # ' // Attempt 2: Obtain Video URL and Size from <media:content> Tag
+        if len(media_content) != 1:
+            try:
+                media_content = re.compile('<media:content filesize="(.+?)" type="video/mp4" url="(.+?)">').findall(str(item.find_next("media:content").encode('utf-8')))
+            except:
+                media_content = ""
+
+        # ' // Attempt 3: Obtain Video URL and Size from <media:content> Tag w/Blip.TV Metadata
         if len(media_content) != 1:
             try:
                 media_content = re.compile('<media:content blip:acodec="ffaac" blip:role="Source" blip:vcodec="ffh264" expression="full" filesize="(.+?)" height="720" isdefault="true" type="video/mp4" url="(.+?)" width="1280">').findall(str(item.find_next("media:content", attrs={"blip:role": "Source"}).encode('utf-8')))
             except:
                 media_content = ""
+
+        # ' // Add Completed Kodi Menu Item
         if len(media_content) == 1:
             media_content = media_content[0]
             info['Size'] = int(media_content[0])
@@ -280,31 +230,17 @@ def get_episodes(url, iconimage):
             episodes.append({'url': media_content[1], 'thumb': iconimage, 'info': info, 'VideoStreamInfo': VideoStreamInfo, 'AudioStreamInfo': AudioStreamInfo})
     return episodes
 
-
-def cache_latest_episods(url, iconimage):
+# ' // Add Array of Episodes from RSS to Kodi Menu Items
+def display_episodes(url, iconimage):
     episodes = get_episodes(url, iconimage)
-    return episodes
-
-
-def get_latest_episodes(url, iconimage):
-    episodes = cache.cacheFunction(cache_latest_episods, url, iconimage)
     for i in episodes:
         add_dir(i['info']['Title'], i['url'], i['thumb'], 'resolve_url', i['info'], i['VideoStreamInfo'], i['AudioStreamInfo'])
-
 
 def get_params():
     p = parse_qs(sys.argv[2][1:])
     for i in p.keys():
         p[i] = p[i][0]
     return p
-
-
-first_run = addon.getSetting('first_run')
-if first_run != addon_version:
-    cache_shows_file()
-    addon_log('first_run, caching shows file')
-    xbmc.sleep(1000)
-    addon.setSetting('first_run', addon_version)
 
 params = get_params()
 
@@ -323,44 +259,25 @@ except:
 
 if mode is None:
     try:
-        shows = eval(cache.get('shows'))
         if isinstance(shows, dict):
             display_shows()
         else:
             raise
     except:
-        addon_log('"shows" cache missing')
-        cache_shows_file()
-        addon_log('caching shows file,'
-                  'this should only happen if common cache db is reset')
-        xbmc.sleep(1000)
-        shows = eval(cache.get('shows'))
         if isinstance(shows, dict):
             display_shows()
-        else:
-            addon_log('"shows" cache ERROR')
     xbmcplugin.setContent(int(sys.argv[1]), 'tvshows')
     xbmcplugin.endOfDirectory(int(sys.argv[1]))
+
 elif mode == 'episodes':
     display_episodes(params['url'], params['iconimage'])
     xbmcplugin.setContent(int(sys.argv[1]), 'episodes')
     xbmcplugin.endOfDirectory(int(sys.argv[1]))
 
 elif mode == 'latest_episodes':
-    get_latest_episodes(params['url'], addon_icon)
+    display_episodes(params['url'], addon_icon)
     xbmcplugin.setContent(int(sys.argv[1]), 'episodes')
     xbmcplugin.endOfDirectory(int(sys.argv[1]))
 
 elif mode == 'resolve_url':
-    set_resolved_url(params['url'])
-
-elif mode == 'gfq_live':
-    display_live()
-    xbmcplugin.setContent(int(sys.argv[1]), 'episodes')
-    xbmcplugin.endOfDirectory(int(sys.argv[1]))
-
-elif mode == 'dailymotion':
-    get_dailymotion()
-
-elif mode == 'justintv':
-    get_justintv()
+    set_resolved_url(params['url'], params['name'])
